@@ -1,0 +1,35 @@
+name: Market Price Agent
+
+on:
+  # Every 30 minutes during Indian market hours (IST = UTC+5:30)
+  # 6:00 AM IST = 00:30 UTC  |  8:00 PM IST = 14:30 UTC
+  schedule:
+    - cron: "0,30 0-14 * * 1-6"   # Mon–Sat, 00:00–14:30 UTC (every 30 min)
+    - cron: "30 14 * * 1-6"        # 14:30 UTC = 20:00 IST (last run)
+
+  # Also allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  run-agent:
+    name: Fetch & push mandi prices
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run agent
+        env:
+          ANTHROPIC_API_KEY:              ${{ secrets.ANTHROPIC_API_KEY }}
+          DATA_GOV_API_KEY:               ${{ secrets.DATA_GOV_API_KEY }}
+          FIREBASE_DATABASE_URL:          ${{ secrets.FIREBASE_DATABASE_URL }}
+          FIREBASE_SERVICE_ACCOUNT_JSON:  ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: python agent.py
