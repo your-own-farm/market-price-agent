@@ -1,29 +1,22 @@
 """
-market-price-agent  (google-genai + Vertex AI edition)
-───────────────────────────────────────────────────────
+market-price-agent
+──────────────────
 Architecture:
-  - Python directly fetches raw data (data.gov.in + Firebase)
-  - Gemini 2.5 Flash receives the raw data and does the intelligent
-    normalisation, dedup, trend analysis, and calls push_prices
+  - Python fetches raw data from data.gov.in for each target state
+  - Python normalises, deduplicates, and computes trends directly
   - Firebase RTDB is updated → rng-market frontend shows live prices
+
+  AI-agent features (crop advice, profit maximisation) are planned for a
+  future iteration and will be layered on top of this foundation.
 
 Auth: Application Default Credentials (gcloud auth application-default login)
 Run:  python agent.py
 """
 
-import json, os, sys
-from google import genai
-from google.genai import types
-from tools import (
-    PUSH_TOOL_GENAI,
-    fetch_mandi_prices, read_firebase_prices, push_prices,
-)
+import os, sys
+from tools import fetch_mandi_prices, read_firebase_prices, push_prices, _slug
 
 # ── Config ────────────────────────────────────────────────────────────────────
-
-GCP_PROJECT  = os.environ.get("GCP_PROJECT", "your-roots-6874d")
-GCP_LOCATION = "us-central1"
-MODEL        = "publishers/google/models/gemini-2.5-flash"
 
 TARGET_STATES = [
     "Maharashtra", "Punjab", "Uttar Pradesh", "Karnataka",
@@ -31,113 +24,114 @@ TARGET_STATES = [
     "Tamil Nadu", "Rajasthan", "Haryana",
 ]
 
-SYSTEM_PROMPT = """You are a market intelligence agent for Indian agricultural commodities.
 
-You will receive:
-- RAW_PRICES: today's records from data.gov.in (modal_price, min_price, max_price in Rs/quintal)
-- PREV_PRICES: existing Firebase data keyed as {state_key}/{district_key}/{crop_key}
+# ── Price processing ──────────────────────────────────────────────────────────
 
-Your task:
-1. For each record in RAW_PRICES:
-   - current price = modal_price
-   - Find matching entry in PREV_PRICES using lowercased state/district/commodity as keys
-   - prev_price = that entry's "price" field (use modal_price if not found)
-   - change_pct = (modal_price - prev_price) / prev_price * 100  (0 if prev_price is 0)
-   - trend: "up" if change_pct > 0.5, "down" if < -0.5, else "stable"
-   - advice: "sell-now" if trend=up AND change_pct >= 5, "hold" if trend=down AND change_pct <= -3, else "watch"
-   - unit = "quintal"
-2. Deduplicate by (state, district, commodity) — keep the record with the highest modal_price.
-3. Exclude records where modal_price == 0 or missing.
-4. Call push_prices with the final normalised list.
-5. After pushing, respond with a text summary:
-   - Total records received
-   - Records pushed
-   - Top 5 biggest movers (crop, district, state, change_pct, advice)"""
+def process_prices(raw_records: list[dict], prev_prices: dict) -> list[dict]:
+    """
+    Normalise, deduplicate, and enrich raw mandi records.
 
+    - Deduplicates by (state, district, commodity) — keeps highest modal_price.
+    - Drops records where modal_price is 0 or missing.
+    - Computes change_pct, trend, and advice vs the previous Firebase snapshot.
+    """
+    # Deduplicate: keep record with highest modal_price per (state, district, commodity)
+    deduped: dict[tuple, dict] = {}
+    for r in raw_records:
+        price = r.get("modal_price", 0)
+        if not price:
+            continue
+        key = (_slug(r["state"]), _slug(r["district"]), _slug(r["commodity"]))
+        if key not in deduped or price > deduped[key].get("modal_price", 0):
+            deduped[key] = r
 
-# ── Tool dispatcher ───────────────────────────────────────────────────────────
+    enriched: list[dict] = []
+    for (state_key, district_key, crop_key), r in deduped.items():
+        modal_price = r["modal_price"]
 
-def dispatch(name: str, args: dict) -> str:
-    if name == "push_prices":
-        result = push_prices(args["prices"])
-    else:
-        result = {"error": f"Unknown tool: {name}"}
-    return json.dumps(result, ensure_ascii=False)
+        # Look up previous price from Firebase snapshot
+        prev_record = (
+            prev_prices
+            .get(state_key, {})
+            .get(district_key, {})
+            .get(crop_key, {})
+        )
+        prev_price = prev_record.get("price", modal_price) if prev_record else modal_price
+
+        if prev_price and prev_price > 0:
+            change_pct = (modal_price - prev_price) / prev_price * 100
+        else:
+            change_pct = 0.0
+
+        if change_pct > 0.5:
+            trend = "up"
+        elif change_pct < -0.5:
+            trend = "down"
+        else:
+            trend = "stable"
+
+        if trend == "up" and change_pct >= 5:
+            advice = "sell-now"
+        elif trend == "down" and change_pct <= -3:
+            advice = "hold"
+        else:
+            advice = "watch"
+
+        enriched.append({
+            "crop":       r["commodity"],
+            "state":      r["state"],
+            "district":   r["district"],
+            "market":     r["market"],
+            "price":      modal_price,
+            "prev_price": prev_price,
+            "unit":       "quintal",
+            "trend":      trend,
+            "change_pct": round(change_pct, 2),
+            "advice":     advice,
+        })
+
+    return enriched
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run() -> None:
-    # Step 1: Fetch data directly in Python (reliable, no AI needed here)
+    # Step 1: Read existing Firebase prices (used to compute trends)
     print("[agent] Fetching existing Firebase prices...")
     prev_prices = read_firebase_prices()
     print(f"[agent] Firebase has {len(prev_prices)} state buckets")
 
+    # Step 2: Fetch today's mandi prices from data.gov.in
     print(f"[agent] Fetching today's mandi prices for {len(TARGET_STATES)} states...")
     raw = fetch_mandi_prices(TARGET_STATES, limit=200)
     errors = [r for r in raw.get("records", []) if "error" in r]
     good   = [r for r in raw.get("records", []) if "error" not in r]
-    print(f"[agent] Fetched {len(good)} records ({len(errors)} state errors)")
+    print(f"[agent] Fetched {len(good)} records ({len(errors)} state error(s))")
+    for err in errors:
+        print(f"[agent] State error — {err.get('state')}: {err.get('error')}")
 
     if not good:
         sys.exit("[agent] No price data fetched — check DATA_GOV_API_KEY")
 
-    # Step 2: Hand off to Gemini for processing + push
-    client = genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_LOCATION)
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        tools=[types.Tool(function_declarations=[PUSH_TOOL_GENAI])],
-        tool_config=types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-        ),
-        temperature=0,
-    )
+    # Step 3: Normalise, deduplicate, compute trends
+    print("[agent] Processing prices...")
+    processed = process_prices(good, prev_prices)
+    print(f"[agent] Processed {len(processed)} unique crop-district records")
 
-    user_msg = (
-        f"RAW_PRICES ({len(good)} records):\n{json.dumps(good, ensure_ascii=False)}\n\n"
-        f"PREV_PRICES:\n{json.dumps(prev_prices, ensure_ascii=False)}\n\n"
-        "Process these prices and call push_prices."
-    )
+    # Step 4: Push to Firebase
+    print("[agent] Pushing prices to Firebase...")
+    result = push_prices(processed)
+    print(f"[agent] Pushed {result['written']} records to Firebase RTDB")
 
-    print(f"[agent] Sending to Gemini ({MODEL}) for processing...")
-    history: list[types.Content] = [
-        types.Content(role="user", parts=[types.Part(text=user_msg)])
-    ]
-
-    while True:
-        response = client.models.generate_content(
-            model=MODEL, contents=history, config=config
-        )
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            print(f"[agent] Empty response — finish: {candidate.finish_reason}")
-            break
-
-        history.append(candidate.content)
-        fn_calls = [p for p in candidate.content.parts if p.function_call]
-
-        if not fn_calls:
-            for part in candidate.content.parts:
-                if part.text:
-                    print("\n[agent] Summary:\n")
-                    print(part.text)
-            break
-
-        result_parts = []
-        for part in fn_calls:
-            fc = part.function_call
-            args = dict(fc.args) if fc.args else {}
-            n = len(args.get("prices", []))
-            print(f"[agent] >> push_prices({n} records)")
-            result_str = dispatch(fc.name, args)
-            print(f"[agent] << {result_str}")
-            result_parts.append(types.Part(
-                function_response=types.FunctionResponse(
-                    name=fc.name,
-                    response={"result": result_str},
-                )
-            ))
-        history.append(types.Content(role="user", parts=result_parts))
+    # Step 5: Print top movers summary
+    movers = sorted(processed, key=lambda x: abs(x["change_pct"]), reverse=True)[:5]
+    if movers:
+        print("\n[agent] Top 5 movers:")
+        for m in movers:
+            print(
+                f"  {m['crop']:20s}  {m['district']:20s}  {m['state']:15s}"
+                f"  {m['change_pct']:+.1f}%  {m['advice']}"
+            )
 
 
 if __name__ == "__main__":

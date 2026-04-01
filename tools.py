@@ -146,78 +146,19 @@ def push_prices(prices: list[dict]) -> dict:
 
 
 # ── Tool schemas for Vertex AI Gemini ────────────────────────────────────────
+# These schemas are kept for future AI-agent integration.
+# The imports are guarded so the rest of the module works without the AI SDKs.
 
-from google.genai import types as genai_types
+try:
+    from google.genai import types as genai_types
+    _GENAI_AVAILABLE = True
+except ImportError:
+    genai_types = None  # type: ignore[assignment]
+    _GENAI_AVAILABLE = False
 
-# Single push tool — used by agent.py (Gemini only needs to call push_prices)
-PUSH_TOOL_GENAI = genai_types.FunctionDeclaration(
-    name="push_prices",
-    description=(
-        "Write normalised price records to Firebase Realtime Database. "
-        "Each record needs: crop, state, district, market, price, prev_price, "
-        "unit, trend (up/down/stable), change_pct, advice (sell-now/hold/watch)."
-    ),
-    parameters=genai_types.Schema(
-        type="OBJECT",
-        properties={
-            "prices": genai_types.Schema(
-                type="ARRAY",
-                items=genai_types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "crop":       genai_types.Schema(type="STRING"),
-                        "state":      genai_types.Schema(type="STRING"),
-                        "district":   genai_types.Schema(type="STRING"),
-                        "market":     genai_types.Schema(type="STRING"),
-                        "price":      genai_types.Schema(type="INTEGER"),
-                        "prev_price": genai_types.Schema(type="INTEGER"),
-                        "unit":       genai_types.Schema(type="STRING"),
-                        "trend":      genai_types.Schema(type="STRING"),
-                        "change_pct": genai_types.Schema(type="NUMBER"),
-                        "advice":     genai_types.Schema(type="STRING"),
-                    },
-                    required=["crop", "state", "district", "market",
-                               "price", "prev_price", "trend", "change_pct", "advice"],
-                ),
-            )
-        },
-        required=["prices"],
-    ),
-)
-
-# Full tool list (all three tools) — kept for reference / CI usage
-TOOL_SCHEMAS_GENAI = [
-    genai_types.FunctionDeclaration(
-        name="fetch_mandi_prices",
-        description=(
-            "Fetch today's crop prices from India's data.gov.in CKAN API. "
-            "Returns raw records with modal, min, max prices in Rs per quintal."
-        ),
-        parameters=genai_types.Schema(
-            type="OBJECT",
-            properties={
-                "states": genai_types.Schema(
-                    type="ARRAY",
-                    items=genai_types.Schema(type="STRING"),
-                    description="State names e.g. ['Maharashtra', 'Punjab']",
-                ),
-                "limit": genai_types.Schema(
-                    type="INTEGER",
-                    description="Max records per state (default 200)",
-                ),
-            },
-            required=["states"],
-        ),
-    ),
-    genai_types.FunctionDeclaration(
-        name="read_firebase_prices",
-        description=(
-            "Read current crop prices from Firebase Realtime Database (/crop-prices). "
-            "Call BEFORE pushing to compute trends vs previous values."
-        ),
-        parameters=genai_types.Schema(type="OBJECT", properties={}),
-    ),
-    genai_types.FunctionDeclaration(
+if _GENAI_AVAILABLE:
+    # Single push tool — used when Gemini is the orchestrator
+    PUSH_TOOL_GENAI = genai_types.FunctionDeclaration(
         name="push_prices",
         description=(
             "Write normalised price records to Firebase Realtime Database. "
@@ -244,84 +185,157 @@ TOOL_SCHEMAS_GENAI = [
                             "advice":     genai_types.Schema(type="STRING"),
                         },
                         required=["crop", "state", "district", "market",
-                                  "price", "prev_price", "trend", "change_pct", "advice"],
+                                   "price", "prev_price", "trend", "change_pct", "advice"],
                     ),
                 )
             },
             required=["prices"],
         ),
-    ),
-]
+    )
 
-from vertexai.generative_models import FunctionDeclaration
+    # Full tool list (all three tools) — kept for reference / future AI usage
+    TOOL_SCHEMAS_GENAI = [
+        genai_types.FunctionDeclaration(
+            name="fetch_mandi_prices",
+            description=(
+                "Fetch today's crop prices from India's data.gov.in CKAN API. "
+                "Returns raw records with modal, min, max prices in Rs per quintal."
+            ),
+            parameters=genai_types.Schema(
+                type="OBJECT",
+                properties={
+                    "states": genai_types.Schema(
+                        type="ARRAY",
+                        items=genai_types.Schema(type="STRING"),
+                        description="State names e.g. ['Maharashtra', 'Punjab']",
+                    ),
+                    "limit": genai_types.Schema(
+                        type="INTEGER",
+                        description="Max records per state (default 200)",
+                    ),
+                },
+                required=["states"],
+            ),
+        ),
+        genai_types.FunctionDeclaration(
+            name="read_firebase_prices",
+            description=(
+                "Read current crop prices from Firebase Realtime Database (/crop-prices). "
+                "Call BEFORE pushing to compute trends vs previous values."
+            ),
+            parameters=genai_types.Schema(type="OBJECT", properties={}),
+        ),
+        genai_types.FunctionDeclaration(
+            name="push_prices",
+            description=(
+                "Write normalised price records to Firebase Realtime Database. "
+                "Each record needs: crop, state, district, market, price, prev_price, "
+                "unit, trend (up/down/stable), change_pct, advice (sell-now/hold/watch)."
+            ),
+            parameters=genai_types.Schema(
+                type="OBJECT",
+                properties={
+                    "prices": genai_types.Schema(
+                        type="ARRAY",
+                        items=genai_types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "crop":       genai_types.Schema(type="STRING"),
+                                "state":      genai_types.Schema(type="STRING"),
+                                "district":   genai_types.Schema(type="STRING"),
+                                "market":     genai_types.Schema(type="STRING"),
+                                "price":      genai_types.Schema(type="INTEGER"),
+                                "prev_price": genai_types.Schema(type="INTEGER"),
+                                "unit":       genai_types.Schema(type="STRING"),
+                                "trend":      genai_types.Schema(type="STRING"),
+                                "change_pct": genai_types.Schema(type="NUMBER"),
+                                "advice":     genai_types.Schema(type="STRING"),
+                            },
+                            required=["crop", "state", "district", "market",
+                                      "price", "prev_price", "trend", "change_pct", "advice"],
+                        ),
+                    )
+                },
+                required=["prices"],
+            ),
+        ),
+    ]
 
-TOOL_SCHEMAS_VERTEX = [
-    FunctionDeclaration(
-        name="fetch_mandi_prices",
-        description=(
-            "Fetch today's crop prices from India's data.gov.in CKAN API "
-            "(Current Daily Price of Various Commodities from Various Markets/Mandis). "
-            "Returns raw records with modal, min, max prices in Rs per quintal."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "states": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "State names as used in Agmarknet e.g. ['Maharashtra', 'Punjab']",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max records per state (default 200)",
-                },
-            },
-            "required": ["states"],
-        },
-    ),
-    FunctionDeclaration(
-        name="read_firebase_prices",
-        description=(
-            "Read current crop prices stored in Firebase Realtime Database (/crop-prices). "
-            "Call this BEFORE pushing so you can compute trends vs previous values."
-        ),
-        parameters={"type": "object", "properties": {}},
-    ),
-    FunctionDeclaration(
-        name="push_prices",
-        description=(
-            "Write normalised price records to Firebase Realtime Database. "
-            "Each record needs: crop, state, district, market, price, prev_price, "
-            "unit, trend (up/down/stable), change_pct (signed float), advice (sell-now/hold/watch)."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "prices": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "crop":       {"type": "string"},
-                            "state":      {"type": "string"},
-                            "district":   {"type": "string"},
-                            "market":     {"type": "string"},
-                            "price":      {"type": "integer", "description": "Modal price Rs/quintal"},
-                            "prev_price": {"type": "integer", "description": "Previous modal price"},
-                            "unit":       {"type": "string"},
-                            "trend":      {"type": "string"},
-                            "change_pct": {"type": "number"},
-                            "advice":     {"type": "string"},
-                        },
-                        "required": ["crop", "state", "district", "market",
-                                     "price", "prev_price", "trend", "change_pct", "advice"],
+try:
+    from vertexai.generative_models import FunctionDeclaration as _VertexFunctionDeclaration
+    _VERTEXAI_AVAILABLE = True
+except ImportError:
+    _VertexFunctionDeclaration = None  # type: ignore[assignment,misc]
+    _VERTEXAI_AVAILABLE = False
+
+if _VERTEXAI_AVAILABLE:
+    TOOL_SCHEMAS_VERTEX = [
+        _VertexFunctionDeclaration(
+            name="fetch_mandi_prices",
+            description=(
+                "Fetch today's crop prices from India's data.gov.in CKAN API "
+                "(Current Daily Price of Various Commodities from Various Markets/Mandis). "
+                "Returns raw records with modal, min, max prices in Rs per quintal."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "states": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "State names as used in Agmarknet e.g. ['Maharashtra', 'Punjab']",
                     },
-                }
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max records per state (default 200)",
+                    },
+                },
+                "required": ["states"],
             },
-            "required": ["prices"],
-        },
-    ),
-]
+        ),
+        _VertexFunctionDeclaration(
+            name="read_firebase_prices",
+            description=(
+                "Read current crop prices stored in Firebase Realtime Database (/crop-prices). "
+                "Call this BEFORE pushing so you can compute trends vs previous values."
+            ),
+            parameters={"type": "object", "properties": {}},
+        ),
+        _VertexFunctionDeclaration(
+            name="push_prices",
+            description=(
+                "Write normalised price records to Firebase Realtime Database. "
+                "Each record needs: crop, state, district, market, price, prev_price, "
+                "unit, trend (up/down/stable), change_pct (signed float), advice (sell-now/hold/watch)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prices": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "crop":       {"type": "string"},
+                                "state":      {"type": "string"},
+                                "district":   {"type": "string"},
+                                "market":     {"type": "string"},
+                                "price":      {"type": "integer", "description": "Modal price Rs/quintal"},
+                                "prev_price": {"type": "integer", "description": "Previous modal price"},
+                                "unit":       {"type": "string"},
+                                "trend":      {"type": "string"},
+                                "change_pct": {"type": "number"},
+                                "advice":     {"type": "string"},
+                            },
+                            "required": ["crop", "state", "district", "market",
+                                         "price", "prev_price", "trend", "change_pct", "advice"],
+                        },
+                    }
+                },
+                "required": ["prices"],
+            },
+        ),
+    ]
 
 # ── Tool schema (Anthropic Claude format — kept for reference) ─────────────────
 
